@@ -10,26 +10,66 @@
 class Logger {
 public:
     Logger() {}
-    Logger(CString& filePath) : logFile(filePath, std::ios::app) {
-        if (!logFile.is_open()) {
-           TRACE(_T("Unable to open log file: %s"), (LPCTSTR)filePath);
+    Logger(CString& filePath) : logFilePath_(filePath) {
+        // Open file to check if it exists
+        CFile file;
+        if (!file.Open(logFilePath_, CFile::modeCreate | CFile::modeWrite | CFile::modeNoTruncate)) {
+            TRACE(_T("Unable to open log file: %s"), (LPCTSTR)filePath);
         }
+        file.Close();
     }
     void log(LPCTSTR message) {
-        if (!logFile.is_open())
-            return;
-        USES_CONVERSION;
-        std::lock_guard<std::mutex> lock(mutex_);
-        std::string outstr;
-        outstr.assign(T2A(message));
-        logFile << getCurrentTime() << " - " << outstr << std::endl;
-        if (!logFile) {
-            TRACE(_T("Failed to write to log file."));
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            CFile file;
+            if (file.Open(logFilePath_, CFile::modeWrite | CFile::modeNoTruncate)) {
+                file.SeekToEnd();
+
+                // Get timestamp
+                CString timeStamp(getCurrentTime().c_str());
+
+                // Prepare the complete log entry
+                CString completeLog;
+                completeLog.Format(_T("%s - %s\r\n"), timeStamp, message);
+
+                // Convert to UTF-8
+#ifndef _UNICODE
+                int nLen = MultiByteToWideChar(CP_ACP, 0, completeLog, -1, NULL, 0);
+                wchar_t* pszW = new wchar_t[nLen];
+                MultiByteToWideChar(CP_ACP, 0, completeLog, -1, pszW, nLen);
+#else
+                const wchar_t* pszW = completeLog;
+                int nLen = completeLog.GetLength() + 1;
+#endif
+
+                // Convert to UTF-8
+                int utf8Len = WideCharToMultiByte(CP_UTF8, 0, pszW, -1, NULL, 0, NULL, NULL);
+                if (utf8Len > 0) {
+                    char* utf8Buffer = new char[utf8Len];
+                    WideCharToMultiByte(CP_UTF8, 0, pszW, -1, utf8Buffer, utf8Len, NULL, NULL);
+
+                    // Write UTF-8 data (excluding null terminator)
+                    file.Write(utf8Buffer, utf8Len - 1);
+
+                    delete[] utf8Buffer;
+                }
+
+#ifndef _UNICODE
+                delete[] pszW;
+#endif
+
+                file.Close();
+            }
+        }
+        catch (CFileException* e) {
+            TRACE(_T("Failed to write to log file: %d\n"), e->m_cause);
+            e->Delete();
         }
     }
 
 private:
-    std::ofstream logFile;
+    CString logFilePath_;
     std::mutex mutex_;
 
     std::string getCurrentTime() {
@@ -47,7 +87,7 @@ private:
 #endif
         std::ostringstream oss;
         oss << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S");
-        oss << '.' << std::setw(3) << std::setfill('0') << milliseconds.count();  // Add milliseconds
+        oss << '.' << std::setw(3) << std::setfill('0') << milliseconds.count();
 
         return oss.str();
     }
